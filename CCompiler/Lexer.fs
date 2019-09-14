@@ -134,7 +134,7 @@ module Lexer =
     let rec printTokens (tokens: Token list) =
         match tokens with
             | token::rest -> printf "%O%s" token.Type (if not (rest = []) && (fst (List.head rest).Pos) > (fst token.Pos) then "\n" else " "); printTokens rest
-            | [] -> ()
+            | [] -> printfn ""
 
     let (|Newline|Whitespace|Semicolon|Other|) ch =
         if ch = '\n' then Newline
@@ -296,7 +296,7 @@ module Lexer =
         let file = file'.Replace("\r", "")
         printfn "%O" file
         let lexed = lex file 0 0 0 []
-        printTokens lexed
+        lexed
 
     let fileToString (file:FileStream) =
         use reader = new StreamReader(file)
