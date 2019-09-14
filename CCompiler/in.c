@@ -1,3 +1,5 @@
 ﻿int main(void) {
-    return 2 || 3 | 5 == 1;
+    int myInt = 502;
+    myInt >>= myInt++;
+    return 2;
 }
