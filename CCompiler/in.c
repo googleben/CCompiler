@@ -1,3 +1,7 @@
 ﻿int main(void) {
-    return !2;
+    return 42+5+3;
+}
+
+void fun() {
+    
 }

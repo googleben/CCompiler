@@ -15,5 +15,6 @@ module Main =
         Lexer.printTokens lexed
         let parsed = Parser.parseEnt lexed
         p parsed
+        printfn "%s" (AsmGen.genProg parsed)
         0 // return an integer exit code
         

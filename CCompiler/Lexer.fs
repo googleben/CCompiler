@@ -20,6 +20,7 @@ module Lexer =
         | COMMA
         | DOUBLE_QUOTE
         | SINGLE_QUOTE
+        | ELIPSIS
         //operators
         | QUESTION
         | COLON
@@ -152,6 +153,7 @@ module Lexer =
             | "]" -> CLOSE_SQUARE
             | ";" -> SEMICOLON
             | "." -> PERIOD
+            | "..." -> ELIPSIS
             | "," -> COMMA
             | "?" -> QUESTION
             | ":" -> COLON
@@ -235,6 +237,8 @@ module Lexer =
                         | ';' -> [getToken ";" line linePos]
                         | '.' -> [getToken "." line linePos]
                         | ',' -> [getToken "," line linePos]
+                        | '?' -> [getToken "?" line linePos]
+                        | ':' -> [getToken ":" line linePos]
                         | '\"' -> [getToken "\"" line linePos]
                         | '\'' -> [getToken "'" line linePos]
                         | '~' -> [getToken "~" line linePos]
