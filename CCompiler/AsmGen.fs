@@ -35,19 +35,45 @@ module AsmGen =
             | AstConst.Int i -> state.emitInst "movq" ["$"+string(i); "%rax"]
             | AstConst.Void -> ()
         
-    let rec genBinary (state: GenState) (left: AstExpr) (op: TokenType) (right: AstExpr) =
+    let rec genBinary (state: GenState) (type_: AstType) (left: AstExpr) (op: TokenType) (right: AstExpr) =
         genExpr state left
         state.emitInst "push" ["%rbx"]
         state.emitInst "movq" ["%rax"; "%rbx"]
         genExpr state right
         match op with
-            | TokenType.PLUS -> state.emitInst "addq" ["%rbx"; "%rax"]
+            | TokenType.LESS ->
+                state.emitInst "cmpl" ["%eax"; "%ebx"]
+                state.emitInst "setl" ["%al"]
+            | TokenType.LESS_EQUALS ->
+                state.emitInst "cmpl" ["%eax"; "%ebx"]
+                state.emitInst "setle" ["%al"]
+            | TokenType.GREATER ->
+                state.emitInst "cmpl" ["%eax"; "%ebx"]
+                state.emitInst "setg" ["%al"]
+            | TokenType.GREATER_EQUALS ->
+                state.emitInst "cmpl" ["%eax"; "%ebx"]
+                state.emitInst "setge" ["%al"]
+            | TokenType.PIPE ->
+                state.emitInst "orl" ["%ebx"; "%eax"]
+            | TokenType.AMPERSAND ->
+                state.emitInst "andl" ["%ebx"; "%eax"]
+            | TokenType.PIPE_PIPE ->
+                state.emitInst "orl" ["%ebx"; "%eax"]
+                state.emitInst "setne" ["%al"]
+            | TokenType.AMPERSAND_AMPERSAND ->
+                state.emitInst "setne" ["%dl"]
+                state.emitInst "xorl" ["%eax"; "%eax"]
+                state.emitInst "testl" ["%esi"; "%esi"]
+                state.emitInst "setne" ["%al"]
+                state.emitInst "andl" ["%edx"; "%eax"]
+            | TokenType.PLUS ->
+                state.emitInst "addl" ["%ebx"; "%eax"]
         state.emitInst "pop" ["%rbx"]
         
     and genExpr (state: GenState) (expr: AstExpr) =
         match expr with
-            | AstExpr.Const c -> genConst state c
-            | AstExpr.Binary (left, op, right) -> genBinary state left op right
+            | AstExpr.Const (t, c) -> genConst state c
+            | AstExpr.Binary (type_, left, op, right) -> genBinary state type_ left op right
         
     let rec genStmt (state: GenState) (stmt: AstStmt) =
         match stmt with
