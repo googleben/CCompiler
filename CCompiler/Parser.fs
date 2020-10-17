@@ -10,28 +10,19 @@ module Parser =
     
     exception UndefinedVar
     
-    exception TypeMismatch
+ 
     
     [<RequireQualifiedAccess>]
     type AstType =
-        | Char
-        | Signed_Char
-        | Unsigned_Char
-        | Double
-        | Long_Double
-        | Float
-        | Int
-        | Signed
-        | Signed_Int
-        | Unsigned
-        | Unsigned_Int
-        | Long
-        | Short
+        | SByte | UByte | SShort | UShort | SInt | UInt | SLong | ULong
+        | Float | Double
         | Void
         | Typedef of AstType
         | Struct of Tuple<AstType, string> list
         | Pointer of AstType
         | Undef
+    
+    exception TypeMismatch of Tuple<AstType, AstType>
     
     type ParserState =
         {mutable Tokens: Token list; mutable Typedefs: Dictionary<string, AstType>}
@@ -52,6 +43,7 @@ module Parser =
     type AstConst =
         | Void
         | Int of int
+        | Float of float32
         
     [<RequireQualifiedAccess>]
     type AstExpr =
@@ -61,6 +53,8 @@ module Parser =
         | Postfix of type_:AstType * operator:TokenType * expr:AstExpr
         | Binary of type_:AstType * left:AstExpr * operator:TokenType * right:AstExpr
         | Conditional of type_:AstType * condition:AstExpr * left:AstExpr * right:AstExpr
+        | Cast of type_:AstType * value:AstExpr
+        
         
     //[<RequireQualifiedAccess>]
     type AstStmt =
@@ -81,16 +75,21 @@ module Parser =
         
     let expectType (state: ParserState): AstType =
         let t = state.pop
-        match t.Type with
-            | TokenType.CHAR -> AstType.Char
-            | TokenType.DOUBLE -> AstType.Double
-            | TokenType.FLOAT -> AstType.Float
-            | TokenType.INT -> AstType.Int
-            | TokenType.LONG -> AstType.Long
-            | TokenType.SHORT -> AstType.Short
-            | TokenType.VOID -> AstType.Void
-            | TokenType.IDENT -> state.getTypedef t.Lexeme
-            | _ -> raise (UnexpectedToken (t, "type"))
+        let mutable ty =
+            match t.Type with
+                | TokenType.CHAR -> AstType.UByte
+                | TokenType.DOUBLE -> AstType.Double
+                | TokenType.FLOAT -> AstType.Float
+                | TokenType.INT -> AstType.SInt
+                | TokenType.LONG -> AstType.SLong
+                | TokenType.SHORT -> AstType.SShort
+                | TokenType.VOID -> AstType.Void
+                | TokenType.IDENT -> state.getTypedef t.Lexeme
+                | _ -> raise (UnexpectedToken (t, "type"))
+        while state.peek.Type = TokenType.STAR do
+            ty <- AstType.Pointer ty
+            ignore state.pop
+        ty
             
     let isType (state: ParserState): bool =
         let t = state.peek
@@ -108,14 +107,14 @@ module Parser =
     let getType (expr: AstExpr): AstType =
         match expr with
             | AstExpr.Binary (t, _, _, _) | AstExpr.Conditional (t, _, _, _) | AstExpr.Const (t, _)
-            | AstExpr.Ident (t, _) | AstExpr.Postfix (t, _, _) | AstExpr.Unary (t, _, _) -> t
+            | AstExpr.Ident (t, _) | AstExpr.Postfix (t, _, _) | AstExpr.Unary (t, _, _) | AstExpr.Cast(t, _) -> t
             
     let expectIdent (state: ParserState): string =
         let t = state.pop
         match t.Type with
             | TokenType.IDENT -> (t.Lexeme)
             | _ -> raise (UnexpectedToken (t, "identifier"))
-            
+    
     let expectToken (state: ParserState) (tokenType: TokenType): Token =
         let t = state.pop
         match t.Type with
@@ -136,15 +135,31 @@ module Parser =
     
     and parseTerminal (state: ParserState): AstExpr =
         match (state.peek).Type with
-            | TokenType.INT_LITERAL -> AstExpr.Const (AstType.Int, AstConst.Int (Int32.Parse (state.pop).Lexeme))
+            | TokenType.INT_LITERAL -> AstExpr.Const (AstType.SInt, AstConst.Int (Int32.Parse (state.pop).Lexeme))
+            | TokenType.FLOAT_LITERAL -> AstExpr.Const (AstType.Float, AstConst.Float (Single.Parse (state.pop).Lexeme))
             | TokenType.IDENT -> AstExpr.Ident (AstType.Undef, expectIdent state)
             | _ -> raise (UnexpectedToken ((state.peek), "terminal"))
+            
+    and parseCastOrGroup (state: ParserState): AstExpr =
+        match (state.peek).Type with
+            | TokenType.OPEN_PAREN ->
+                expectToken state TokenType.OPEN_PAREN |> ignore
+                if isType state then
+                    let tmp = expectType state
+                    expectToken state TokenType.CLOSE_PAREN |> ignore
+                    AstExpr.Cast(tmp, parseExpr state)
+                else
+                    let tmp = parseExpr state
+                    expectToken state TokenType.CLOSE_PAREN |> ignore
+                    tmp
+            | _ -> parseTerminal state
+                
             
     and parseUnaryExpr (state: ParserState): AstExpr =
         match (state.peek).Type with
             | TokenType.MINUS | TokenType.TILDE | TokenType.PLUS | TokenType.BANG | TokenType.STAR
             | TokenType.PLUS_PLUS | TokenType.MINUS_MINUS | TokenType.AMPERSAND -> AstExpr.Unary (AstType.Undef, (state.pop.Type), (parseUnaryExpr state))
-            | _ -> parseTerminal state
+            | _ -> parseCastOrGroup state
             
     and parseMult (state: ParserState): AstExpr =
         let mutable left = parseUnaryExpr state
@@ -319,13 +334,14 @@ module Parser =
     and parseAssign (state: ParserState): AstExpr =
         let mutable left = parseConditional state
         match left with
-            | AstExpr.Unary (_) -> match state.peek.Type with
-                                    | TokenType.EQUALS | TokenType.PLUS_EQUALS | TokenType.MINUS_EQUALS | TokenType.STAR_EQUALS | TokenType.SLASH_EQUALS
-                                    | TokenType.PERCENT_EQUALS | TokenType.AMPERSAND_EQUALS | TokenType.PIPE_EQUALS | TokenType.GREATER_GREATER_EQUALS
-                                    | TokenType. LESS_LESS_EQUALS ->
-                                        let op = state.pop
-                                        left <- AstExpr.Binary (AstType.Undef, left, op.Type, (parseAssign state))
-                                    | _ -> ()
+            | AstExpr.Ident (_) | AstExpr.Unary (_) ->
+                match state.peek.Type with
+                        | TokenType.EQUALS | TokenType.PLUS_EQUALS | TokenType.MINUS_EQUALS | TokenType.STAR_EQUALS | TokenType.SLASH_EQUALS
+                        | TokenType.PERCENT_EQUALS | TokenType.AMPERSAND_EQUALS | TokenType.PIPE_EQUALS | TokenType.GREATER_GREATER_EQUALS
+                        | TokenType. LESS_LESS_EQUALS ->
+                            let op = state.pop
+                            left <- AstExpr.Binary (AstType.Undef, left, op.Type, (parseAssign state))
+                        | _ -> ()
             | _ -> ()
         left
     and parseExpr (state: ParserState): AstExpr =
@@ -338,7 +354,7 @@ module Parser =
     and parseReturn (state: ParserState): AstStmt =
         expectToken state TokenType.RETURN |> ignore
         if state.peek.Type=TokenType.SEMICOLON then
-            AstStmt.Return (AstExpr.Const (AstType.Int, AstConst.Int 0))
+            AstStmt.Return (AstExpr.Const (AstType.SInt, AstConst.Int 0))
         else
             AstStmt.Return (parseExpr state)
         
@@ -402,12 +418,12 @@ module Parser =
             | AstExpr.Binary (_, l, op, r) ->
                 let l' = typifyE frame l
                 let r' = typifyE frame r
-                if not ((getType l') = (getType r')) then raise TypeMismatch
+                if not ((getType l') = (getType r')) then raise (TypeMismatch (getType l', getType r'))
                 AstExpr.Binary (getType l', l', op, r')
             | AstExpr.Conditional (_, cond, l, r) ->
                 let l' = typifyE frame l
                 let r' = typifyE frame r
-                if not ((getType l') = (getType r')) then raise TypeMismatch
+                if not ((getType l') = (getType r')) then raise (TypeMismatch (getType l', getType r'))
                 AstExpr.Conditional (getType l', cond, l', r')
             | AstExpr.Ident (_, n) ->
                 AstExpr.Ident (frame.getVar n, n)
@@ -417,7 +433,8 @@ module Parser =
             | AstExpr.Unary (_, op, e) ->
                 let e' = typifyE frame e
                 AstExpr.Unary (getType e', op, e)
-            | AstExpr.Const (t, v) -> expr
+            | AstExpr.Const _ -> expr
+            | AstExpr.Cast (t, e) -> AstExpr.Cast (t, typifyE frame e)
         
     let rec typifyS (frame: AstFrame) (stmt: AstStmt): AstFrame * AstStmt =
         match stmt with
@@ -425,13 +442,19 @@ module Parser =
             | AstStmt.Expr e -> (frame, AstStmt.Expr (typifyE frame e))
             | AstStmt.Return e -> (frame, AstStmt.Return (typifyE frame e))
             | AstStmt.Block l ->
-                let swap (a, b) = (b, a)
-                (frame, AstStmt.Block (fst (List.mapFold (fun f s -> swap (typifyS f s)) frame l)))
-            | AstStmt.StructDecl (n, t) -> (frame, stmt)
+                let frame2 = frame.newFrame
+                (frame, AstStmt.Block (fst (List.fold
+                                        (fun fstate fstmt ->
+                                            let flist, fframe = fstate
+                                            let fframe, fstmt = typifyS fframe fstmt
+                                            (flist @ [fstmt], fframe)
+                                        ) ([], frame2) l)))
+            | AstStmt.StructDecl _ -> (frame, stmt)
         
     let typify (f: AstFun): AstFun =
         let frame = {prev = None; vars = Map.empty}
         AstFun (f.ret, f.name, f.parameters, snd (typifyS frame f.body))
         
     let parseEnt (tokens: Token list) : AstFun list =
-        parse {Tokens=tokens; Typedefs=(new Dictionary<string, AstType>())} []
+        parse {Tokens=tokens; Typedefs=(Dictionary<string, AstType>())} []
+        |> List.map typify

@@ -1,5 +1,4 @@
 ﻿namespace CCompiler
-open System.Linq.Expressions
 open System.IO
 
 module Main =
@@ -15,6 +14,8 @@ module Main =
         Lexer.printTokens lexed
         let parsed = Parser.parseEnt lexed
         p parsed
-        printfn "%s" (AsmGen.genProg parsed)
+        let tac = TACGen.TACGen.tacifyFuns parsed
+        p tac
+        //printfn "%s" (AsmGen.genProg parsed)
         0 // return an integer exit code
         

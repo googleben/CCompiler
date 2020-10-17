@@ -1,7 +1,6 @@
 ﻿namespace CCompiler
 module Lexer =
     open System
-    open System
     open System.IO
     open System.Text.RegularExpressions
 
@@ -92,6 +91,7 @@ module Lexer =
         | VOLATILE
         | WHILE
         | INT_LITERAL
+        | FLOAT_LITERAL
         | IDENT
         
     let getKeywordTokenType str =
@@ -217,7 +217,16 @@ module Lexer =
             str <- str + (string (file.Chars pos))
             pos <- pos + 1
             if pos = file.Length then raise UnexpectedEOF else ()
-        {Pos=(line, linePos'); Type=INT_LITERAL; Lexeme=str}
+        if file.Chars pos = '.' then
+            str <- str + (string (file.Chars pos))
+            pos <- pos + 1
+            if pos = file.Length then raise UnexpectedEOF else ()
+            while Char.IsDigit (file.Chars pos) do
+                str <- str + (string (file.Chars pos))
+                pos <- pos + 1
+                if pos = file.Length then raise UnexpectedEOF else ()
+            {Pos=(line, linePos'); Type=FLOAT_LITERAL; Lexeme=str}
+        else {Pos=(line, linePos'); Type=INT_LITERAL; Lexeme=str}
         
 
     let rec lex (file: string) (pos: int) (line: int) (linePos: int) (prev_list: Token list): Token list =

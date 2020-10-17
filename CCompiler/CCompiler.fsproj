@@ -47,8 +47,10 @@
     <Content Include="packages.config" />
     <Compile Include="Lexer.fs" />
     <Compile Include="Parser.fs" />
+    <Compile Include="TACGen.fs" />
     <Compile Include="AsmGen.fs" />
     <Compile Include="Program.fs" />
+    
   </ItemGroup>
   <Import Project="$(FSharpTargetsPath)" Condition="Exists('$(FSharpTargetsPath)')" />
 </Project>
