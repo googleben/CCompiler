@@ -1,4 +1,5 @@
 ﻿namespace CCompiler
+open CCompiler.TACGen.TACGen
 open Lexer
 open System.Text
 
@@ -34,8 +35,9 @@ module AsmGen =
         match c with
             | AstConst.Int i -> state.emitInst "movq" ["$"+string(i); "%rax"]
             | AstConst.Void -> ()
+            | _ -> raise Unimplemented
         
-    let rec genBinary (state: GenState) (type_: AstType) (left: AstExpr) (op: TokenType) (right: AstExpr) =
+    let rec genBinary (state: GenState) (_type: AstType) (left: AstExpr) (op: TokenType) (right: AstExpr) =
         genExpr state left
         state.emitInst "push" ["%rbx"]
         state.emitInst "movq" ["%rax"; "%rbx"]
@@ -68,21 +70,24 @@ module AsmGen =
                 state.emitInst "andl" ["%edx"; "%eax"]
             | TokenType.PLUS ->
                 state.emitInst "addl" ["%ebx"; "%eax"]
+            | _ -> raise Unimplemented
         state.emitInst "pop" ["%rbx"]
         
     and genExpr (state: GenState) (expr: AstExpr) =
         match expr with
-            | AstExpr.Const (t, c) -> genConst state c
+            | AstExpr.Const (_, c) -> genConst state c
             | AstExpr.Binary (type_, left, op, right) -> genBinary state type_ left op right
+            | _ -> raise Unimplemented
         
     let rec genStmt (state: GenState) (stmt: AstStmt) =
         match stmt with
-            | AstStmt.Block l -> List.fold (fun a b -> b) false (List.map (genStmt state) l)
+            | AstStmt.Block l -> List.fold (fun _ b -> b) false (List.map (genStmt state) l)
             | AstStmt.Return e ->
                 genExpr state e
                 state.emitInst "leave" []
                 state.emitInst "ret" []
                 true
+            | _ -> raise Unimplemented
     
     let genFunc (state: GenState) (func: AstFun) =
         state.emit ".text"

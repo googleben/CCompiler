@@ -9,6 +9,7 @@ module Parser =
     exception Unreachable
     
     exception UndefinedVar
+    exception UndefinedFunction
     
  
     
@@ -30,6 +31,7 @@ module Parser =
                              | [] -> true
                              | _ -> false
         member this.peek = List.head this.Tokens
+        member this.peek2 = List.head (List.tail this.Tokens)
         member this.pop = match this.Tokens with
                            | head::[] -> this.Tokens <- []; head
                            | head::tail -> this.Tokens <- tail; head
@@ -54,6 +56,7 @@ module Parser =
         | Binary of type_:AstType * left:AstExpr * operator:TokenType * right:AstExpr
         | Conditional of type_:AstType * condition:AstExpr * left:AstExpr * right:AstExpr
         | Cast of type_:AstType * value:AstExpr
+        | FunCall of type_:AstType * name:string * args:AstExpr list
         
         
     //[<RequireQualifiedAccess>]
@@ -64,7 +67,7 @@ module Parser =
         | Decl of AstType * string
         | StructDecl of string * AstType
         
-    type AstFun(ret: AstType, name: string, parameters: AstExpr list, body: AstStmt) =
+    type AstFun(ret: AstType, name: string, parameters: (AstType*string) list, body: AstStmt) =
         member this.ret = ret
         member this.name = name
         member this.parameters = parameters
@@ -107,7 +110,8 @@ module Parser =
     let getType (expr: AstExpr): AstType =
         match expr with
             | AstExpr.Binary (t, _, _, _) | AstExpr.Conditional (t, _, _, _) | AstExpr.Const (t, _)
-            | AstExpr.Ident (t, _) | AstExpr.Postfix (t, _, _) | AstExpr.Unary (t, _, _) | AstExpr.Cast(t, _) -> t
+            | AstExpr.Ident (t, _) | AstExpr.Postfix (t, _, _) | AstExpr.Unary (t, _, _) | AstExpr.Cast(t, _)
+            | AstExpr.FunCall (t, _, _) -> t
             
     let expectIdent (state: ParserState): string =
         let t = state.pop
@@ -140,6 +144,20 @@ module Parser =
             | TokenType.IDENT -> AstExpr.Ident (AstType.Undef, expectIdent state)
             | _ -> raise (UnexpectedToken ((state.peek), "terminal"))
             
+    and parseFunCall (state: ParserState): AstExpr =
+        if (state.peek).Type = TokenType.IDENT && (state.peek2).Type = TokenType.OPEN_PAREN then
+            let fname = state.pop.Lexeme
+            expectToken state TokenType.OPEN_PAREN |> ignore
+            let mutable args = []
+            if not ((state.peek).Type = TokenType.CLOSE_PAREN) then
+                args <- [parseAssign state]
+                while (state.peek).Type = TokenType.COMMA do
+                    expectToken state TokenType.COMMA |> ignore
+                    args <- args @ [parseAssign state]
+            expectToken state TokenType.CLOSE_PAREN |> ignore
+            AstExpr.FunCall (AstType.Undef, fname, args)
+        else parseTerminal state
+            
     and parseCastOrGroup (state: ParserState): AstExpr =
         match (state.peek).Type with
             | TokenType.OPEN_PAREN ->
@@ -152,7 +170,7 @@ module Parser =
                     let tmp = parseExpr state
                     expectToken state TokenType.CLOSE_PAREN |> ignore
                     tmp
-            | _ -> parseTerminal state
+            | _ -> parseFunCall state
                 
             
     and parseUnaryExpr (state: ParserState): AstExpr =
@@ -395,23 +413,36 @@ module Parser =
             let parameters = match state.peek.Type with
                               | TokenType.VOID -> state.pop |> ignore; []
                               | TokenType.CLOSE_PAREN -> []
-                              | _ -> []
+                              | _ ->
+                                  let mutable ans = [(expectType state, expectIdent state)]
+                                  while not (state.peek.Type = TokenType.CLOSE_PAREN) do
+                                    expectToken state TokenType.COMMA |> ignore
+                                    ans <- ans @ [(expectType state, expectIdent state)]
+                                  ans
             expectToken state TokenType.CLOSE_PAREN |> ignore
             let body = parseBlock state
-            parse state soFar @ [AstFun(t, name, parameters, body)]
+            parse state (soFar @ [AstFun(t, name, parameters, body)])
         
     type AstFrame =
-        {prev: AstFrame option; vars: Map<string, AstType>}
+        {prev: AstFrame option; vars: Map<string, AstType>; funcs: Map<string, AstType>}
         member this.getVar (name: string): AstType =
             match this.vars.TryFind name with
                 | None -> match this.prev with
                             | Some prev -> prev.getVar name
                             | None -> raise UndefinedVar
                 | Some t -> t
+        member this.getFunc (name: string): AstType =
+            match this.funcs.TryFind name with
+                | None -> match this.prev with
+                            | Some prev -> prev.getFunc name
+                            | None -> raise UndefinedFunction
+                | Some t -> t
         member this.addVar (name: string) (t: AstType): AstFrame =
-            {prev = this.prev; vars = this.vars.Add (name, t)}
+            {this with vars = this.vars.Add (name, t)}
+        member this.addFun (name: string) (t: AstType): AstFrame =
+            {this with funcs = this.funcs.Add (name, t)}
         member this.newFrame: AstFrame =
-            {prev = Some this; vars = Map.empty}
+            {this with prev = Some this; vars = Map.empty}
         
     let rec typifyE (frame: AstFrame) (expr: AstExpr): AstExpr =
         match expr with
@@ -435,6 +466,7 @@ module Parser =
                 AstExpr.Unary (getType e', op, e)
             | AstExpr.Const _ -> expr
             | AstExpr.Cast (t, e) -> AstExpr.Cast (t, typifyE frame e)
+            | AstExpr.FunCall (_, n, ps) -> AstExpr.FunCall (frame.getFunc n, n, List.map (typifyE frame) ps)
         
     let rec typifyS (frame: AstFrame) (stmt: AstStmt): AstFrame * AstStmt =
         match stmt with
@@ -446,15 +478,27 @@ module Parser =
                 (frame, AstStmt.Block (fst (List.fold
                                         (fun fstate fstmt ->
                                             let flist, fframe = fstate
-                                            let fframe, fstmt = typifyS fframe fstmt
+                                            let fframe, fstmt = (typifyS fframe fstmt)
                                             (flist @ [fstmt], fframe)
                                         ) ([], frame2) l)))
             | AstStmt.StructDecl _ -> (frame, stmt)
         
-    let typify (f: AstFun): AstFun =
-        let frame = {prev = None; vars = Map.empty}
+    let typifyFun (f: AstFun) (frame: AstFrame): AstFun =
+        let frame = frame.newFrame
+        let frame =
+            List.fold
+                (fun (s: AstFrame) param -> s.addVar (snd param) (fst param))
+                frame f.parameters
         AstFun (f.ret, f.name, f.parameters, snd (typifyS frame f.body))
-        
+    
+    let typify (fs: AstFun list): AstFun list =
+        let mutable frame = {prev = None; vars = Map.empty; funcs = Map.empty}
+        let mutable ans = []
+        for f in fs do
+            frame <- frame.addFun f.name f.ret
+            ans <- ans @ [typifyFun f frame]
+        ans
+    
     let parseEnt (tokens: Token list) : AstFun list =
         parse {Tokens=tokens; Typedefs=(Dictionary<string, AstType>())} []
-        |> List.map typify
+        |> typify

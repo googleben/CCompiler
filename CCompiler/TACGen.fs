@@ -18,6 +18,7 @@ module TACGen =
         | Float32 | Float64
         | Pointer of TACType
         | Struct of TACType list
+        | Void
     
     type Address =
         | Name of TACType * string
@@ -35,15 +36,21 @@ module TACGen =
         | GetDeref of dest:Address * srcPtr:Address
         | Jump of dest:int
         | CondJump of cond:Address * desired:bool * dest:int
-        | Param of value:Address * index:int
+        | Param of value:Address
         | FunCall of name:string
+        | CopyFunCall of dest:Address * name:string
         | Return of value:Address
+        //following instructions are pseudo-instructions which don't count as an extra "expr"
+        //and aren't executed (they just provide information to following stages of compilation)
+        | NewScope of varNames:string list
+        | CloseScope
         
     type TACState =
         {temps: int; currExpr: int; pendingPostfix: TAC list}
         
         member this.newTemp = {this with temps = this.temps + 1}
         member this.newExpr = {this with currExpr = this.currExpr + 1}
+        member this.newExprs n = {this with currExpr = this.currExpr + n}
         member this.newPostfix tac = {this with pendingPostfix = tac :: this.pendingPostfix}
     
     let rec getTacType (astType: AstType): TACType =
@@ -58,7 +65,7 @@ module TACGen =
             | AstType.ULong -> TACType.UInt64
             | AstType.Float -> TACType.Float32
             | AstType.Double -> TACType.Float64
-            | AstType.Void -> TACType.Int64
+            | AstType.Void -> TACType.Void
             | AstType.Struct l -> TACType.Struct (List.map getTacType (List.map fst l))
             | AstType.Pointer t -> TACType.Pointer (getTacType t)
             | AstType.Typedef t -> getTacType t
@@ -67,12 +74,9 @@ module TACGen =
     let rec tacifyE (expr: AstExpr, state: TACState): TAC list * Address * TACState =
         match expr with
             | AstExpr.Const (t, v) ->
-                let dest = (Address.Temp ((getTacType t), state.temps))
-                ([TAC.Const(dest, v)], dest, state.newTemp.newExpr)
+                ([], Address.Constant ((getTacType t), v), state)
             | AstExpr.Ident (t, s) ->
-                let t = getTacType t
-                let dest = (Address.Temp (t, state.temps))
-                ([TAC.Copy(dest,(Address.Name(t, s)))], dest, state.newTemp.newExpr)
+                ([], Address.Name ((getTacType t), s), state)
             | AstExpr.Unary (t, TokenType.STAR, e) ->
                 let l, ret, state = tacifyE (e, state)
                 let dest = (Address.Temp ((getTacType t), state.temps))
@@ -168,6 +172,31 @@ module TACGen =
                             | Address.Name (_, s) -> Address.Name (t, s)
                             | Address.Temp (_, n) -> Address.Temp (t, n)
                 (l, ret, state)
+            | AstExpr.FunCall (t, fname, args) ->
+                let t = getTacType t
+                //compute each of the arguments
+                //args will be a list of addresses, each being one argument
+                let l, args, state = List.fold
+                                         (fun fstate e ->
+                                            let fl, frets, fstate = fstate
+                                            let fl2, fret, fstate = tacifyE (e, fstate)
+                                            (fl @ fl2, frets @ [fret], fstate))
+                                         ([], [], state) args
+                //now put each of the arguments into a Param expression
+                let argsL = List.map (fun a -> TAC.Param a) args
+                let l = l @ argsL
+                let state = state.newExprs l.Length
+                //now we just need to actually call the function
+                
+                //if it returns void, we'll return void
+                //but if it return a value, we'll store that in a temporary
+                match t with
+                    | TACType.Void ->
+                        (l @ [TAC.FunCall fname], Address.Constant (TACType.Void, AstConst.Void), state.newExpr)
+                    | _ ->
+                        let dest = Address.Temp (t, state.temps)
+                        (l @ [TAC.CopyFunCall (dest, fname)], dest, state.newTemp.newExpr)
+                
                 
     let rec tacifyS (stmt: AstStmt, state: TACState): TAC list * TACState =
         match stmt with
@@ -178,25 +207,38 @@ module TACGen =
                 let l, _, state = tacifyE (e, state)
                 (l, state)
             | AstStmt.Block sl ->
+                //turn the list of statements into a list of TAC expressions
                 let l, state =
                    List.fold (fun (fstatet) (fstmt: AstStmt) ->
                        let flist, fstate = fstatet
                        let flist2, fstate = tacifyS (fstmt, fstate)
                        (flist @ flist2, fstate)
                    ) ([], state) sl
-                (l, state)
+                //get a list of variable names declared DIRECTLY in this scope
+                //this does not include declarations in child scopes.
+                //we need this to keep track of where things should be stored e.g. during
+                //recursion where the same block can be entered more than once without
+                //exiting, so simply determining which scope may not be good enough.
+                //we're essentially simulating stack enter/exit instructions in TAC
+                let varNames =
+                    List.choose (fun s -> match s with | AstStmt.Decl (_,s) -> Some(s); | _ -> None) sl
+                (TAC.NewScope (varNames) :: l @ [TAC.CloseScope], state)
             | AstStmt.Decl _ | AstStmt.StructDecl _ ->
                 ([], state)
                 
     let tacifyFun (f: AstFun, state: TACState): TAC list * TACState =
-        tacifyS (f.body, state)
+        let l, s = tacifyS (f.body, state)
+        (TAC.NewScope (List.map snd f.parameters) :: l @ [TAC.CloseScope], s)
         
-    let tacifyFuns (fs: AstFun list): TAC list =
+    type TACInfo = {functions: Map<string, int>; code: TAC list}
+        
+    let tacifyFuns (fs: AstFun list): TACInfo =
         let state = {temps = 0; currExpr = 0; pendingPostfix = []}
-        let l, _ =
+        let l, _, funcs =
            List.fold (fun (fstatet) (ffun: AstFun) ->
-               let flist, fstate = fstatet
+               let flist, fstate, funcs = fstatet
+               let funcStart = fstate.currExpr
                let flist2, fstate = tacifyFun (ffun, fstate)
-               (flist @ flist2, fstate)
-           ) ([], state) fs
-        l
+               (flist @ flist2, fstate, Map.add ffun.name funcStart funcs)
+           ) ([], state, Map.empty) fs
+        {functions = funcs; code = l}

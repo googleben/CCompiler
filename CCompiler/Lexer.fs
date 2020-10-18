@@ -93,7 +93,90 @@ module Lexer =
         | INT_LITERAL
         | FLOAT_LITERAL
         | IDENT
-        
+    
+    let getTokenTypeAsStr (t: TokenType) =
+            match t with
+                | OPEN_CURLY -> "{"
+                | CLOSE_CURLY -> "}"
+                | OPEN_PAREN -> "("
+                | CLOSE_PAREN -> ")"
+                | OPEN_SQUARE -> "["
+                | CLOSE_SQUARE -> "]"
+                | SEMICOLON -> ";"
+                | COMMA -> ","
+                | DOUBLE_QUOTE -> "\""
+                | SINGLE_QUOTE -> "'"
+                | ELIPSIS -> "..."
+                | QUESTION -> "?"
+                | COLON -> ":"
+                | PERIOD -> "."
+                | PERCENT -> "%"
+                | PERCENT_EQUALS -> "%="
+                | SLASH -> "/"
+                | SLASH_EQUALS -> "/="
+                | PIPE -> "|"
+                | PIPE_PIPE -> "||"
+                | PIPE_EQUALS -> "|="
+                | AMPERSAND -> "&"
+                | AMPERSAND_AMPERSAND -> "&&"
+                | AMPERSAND_EQUALS -> "&="
+                | CARET -> "^"
+                | CARET_EQUALS -> "^="
+                | STAR -> "*"
+                | STAR_EQUALS -> "*="
+                | PLUS -> "+"
+                | PLUS_PLUS -> "++"
+                | PLUS_EQUALS -> "+="
+                | MINUS -> "-"
+                | MINUS_MINUS -> "--"
+                | MINUS_EQUALS -> "-="
+                | EQUALS -> "="
+                | EQUALS_EQUALS -> "=="
+                | BANG -> "!"
+                | BANG_EQUALS -> "!="
+                | GREATER -> ">"
+                | GREATER_GREATER -> ">>"
+                | GREATER_GREATER_EQUALS -> ">>="
+                | GREATER_EQUALS -> ">="
+                | LESS -> "<"
+                | LESS_LESS -> "<<"
+                | LESS_LESS_EQUALS -> "<<="
+                | LESS_EQUALS -> "<="
+                | TILDE -> "~"
+                | AUTO -> "auto"
+                | BREAK -> "break"
+                | CASE -> "case"
+                | CHAR -> "char"
+                | CONST -> "const"
+                | CONTINUE -> "continue"
+                | DEFAULT -> "default"
+                | DO -> "do"
+                | DOUBLE -> "double"
+                | ELSE -> "else"
+                | ENUM -> "enum"
+                | EXTERN -> "extern"
+                | FLOAT -> "float"
+                | FOR -> "for"
+                | GOTO -> "goto"
+                | IF -> "if"
+                | INT -> "int"
+                | LONG -> "long"
+                | REGISTER -> "register"
+                | RETURN -> "return"
+                | SHORT -> "short"
+                | SIGNED -> "signed"
+                | SIZEOF -> "sizeof"
+                | STATIC -> "static"
+                | STRUCT -> "struct"
+                | SWITCH -> "switch"
+                | TYPEDEF -> "typedef"
+                | UNION -> "union"
+                | UNSIGNED -> "unsigned"
+                | VOID -> "void"
+                | VOLATILE -> "volatile"
+                | WHILE -> "while"
+                | _ -> t.ToString()
+    
     let getKeywordTokenType str =
         match str with
             | "auto" -> Some AUTO
@@ -280,7 +363,11 @@ module Lexer =
                             if (file.Chars pos') = '=' then pos' <- pos' + 1; linePos' <- linePos' + 1; [getToken "!=" line linePos]
                             else [getToken "!" line linePos]
                         | '/' ->
-                            if (file.Chars pos') = '=' then pos' <- pos' + 1; linePos' <- linePos' + 1; [getToken "/=" line linePos]
+                            if (file.Chars pos') = '/' then
+                                while not ((file.Chars pos') = '\n') do
+                                    pos' <- pos' + 1
+                                []
+                            elif (file.Chars pos') = '=' then pos' <- pos' + 1; linePos' <- linePos' + 1; [getToken "/=" line linePos]
                             else [getToken "/" line linePos]
                         | '%' ->
                             if (file.Chars pos') = '=' then pos' <- pos' + 1; linePos' <- linePos' + 1; [getToken "/=" line linePos]
