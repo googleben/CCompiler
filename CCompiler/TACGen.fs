@@ -116,7 +116,8 @@ module TACGen =
                         (l @ [TAC.Copy (Address.Name (t2, s), b)], b, state.newExpr)
                     | AstExpr.Unary (_, TokenType.STAR, s) ->
                         //s is a pointer, get its address
-                        let l, ptrVal, state = tacifyE (s, state)
+                        let l2, ptrVal, state = tacifyE (s, state)
+                        let l = l @ l2
                         (l @ [TAC.CopyToDeref (ptrVal, b)], b, state.newExpr)
                     | _ -> raise LValueExpected
             | AstExpr.Binary (t, a, o, b) ->
@@ -221,10 +222,31 @@ module TACGen =
                 //exiting, so simply determining which scope may not be good enough.
                 //we're essentially simulating stack enter/exit instructions in TAC
                 let varNames =
-                    List.choose (fun s -> match s with | AstStmt.Decl (_,s) -> Some(s); | _ -> None) sl
+                    sl
+                        |> List.choose
+                               (fun s ->
+                                    match s with
+                                        | AstStmt.Decls (_,s) -> Some(s)
+                                        | _ -> None
+                                )
+                        |> List.fold (@) []
+                        |> List.map fst
                 (TAC.NewScope (varNames) :: l @ [TAC.CloseScope], state)
-            | AstStmt.Decl _ | AstStmt.StructDecl _ ->
-                ([], state)
+            | AstStmt.Decls (t, decls) ->
+                let t = getTacType t
+                let l, state =
+                    List.fold
+                        (fun fstate decl ->
+                            let l, state = fstate
+                            match decl with
+                                | (_, None) -> (l, state)
+                                | (n, Some(e)) ->
+                                    let l2, ret, state = tacifyE (e, state)
+                                    let l = l @ l2 @ [TAC.Copy (Address.Name (t, n), ret)]
+                                    (l, state.newExpr)
+                        ) ([], state) decls
+                (l, state)
+            | AstStmt.StructDecl _ | AstStmt.Nop -> ([], state)
                 
     let tacifyFun (f: AstFun, state: TACState): TAC list * TACState =
         let l, s = tacifyS (f.body, state)

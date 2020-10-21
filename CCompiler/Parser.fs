@@ -10,6 +10,7 @@ module Parser =
     
     exception UndefinedVar
     exception UndefinedFunction
+    exception DerefNonPointer
     
  
     
@@ -25,8 +26,37 @@ module Parser =
     
     exception TypeMismatch of Tuple<AstType, AstType>
     
+    type ParserStateTypes =
+        {mutable Typedefs: Dictionary<string, AstType>; mutable Structs: Dictionary<string, AstType>; Prev: ParserStateTypes Option}
+        static member empty = {Typedefs = Dictionary(); Structs = Dictionary(); Prev = None}
+        
+        member this.isTypedef n =
+            if this.Typedefs.ContainsKey n then
+                true
+            elif this.Prev.IsSome then
+                this.Prev.Value.isTypedef n
+            else
+                false
+        member this.getTypedef n =
+            if this.Typedefs.ContainsKey n then
+                this.Typedefs.Item n
+            else
+                this.Prev.Value.getTypedef n
+        member this.isStruct n =
+            if this.Structs.ContainsKey n then
+                true
+            elif this.Prev.IsSome then
+                this.Prev.Value.isStruct n
+            else
+                false
+        member this.getStruct n =
+            if this.Structs.ContainsKey n then
+                this.Structs.Item n
+            else
+                this.Prev.Value.getStruct n
+        
     type ParserState =
-        {mutable Tokens: Token list; mutable Typedefs: Dictionary<string, AstType>}
+        {mutable Tokens: Token list; mutable Types: ParserStateTypes}
         member this.isEnd = match this.Tokens with
                              | [] -> true
                              | _ -> false
@@ -37,9 +67,22 @@ module Parser =
                            | head::tail -> this.Tokens <- tail; head
                            | [] -> raise NoSuchToken
         member this.isTypedef =
-            this.Typedefs.ContainsKey
-        member this.getTypedef name =
-            this.Typedefs.Item name
+            this.Types.isTypedef
+        member this.getTypedef =
+            this.Types.getTypedef
+        member this.addTypedef name typ =
+            this.Types.Typedefs.Add(name, typ)
+        member this.isStruct =
+            this.Types.isStruct
+        member this.getStruct =
+            this.Types.getStruct
+        member this.addStruct name typ =
+            this.Types.Structs.Add(name, typ)
+            
+        member this.newFrame =
+            this.Types <- {ParserStateTypes.empty with Prev = Some this.Types}
+        member this.popFrame =
+            this.Types <- this.Types.Prev.Value
         
     [<RequireQualifiedAccess>]
     type AstConst =
@@ -64,8 +107,9 @@ module Parser =
         | Return of AstExpr
         | Expr of AstExpr
         | Block of AstStmt list
-        | Decl of AstType * string
+        | Decls of AstType * (string * AstExpr Option) list
         | StructDecl of string * AstType
+        | Nop
         
     type AstFun(ret: AstType, name: string, parameters: (AstType*string) list, body: AstStmt) =
         member this.ret = ret
@@ -76,7 +120,7 @@ module Parser =
         
     exception UnexpectedToken of Token * string
         
-    let expectType (state: ParserState): AstType =
+    let rec expectType (state: ParserState): AstType =
         let t = state.pop
         let mutable ty =
             match t.Type with
@@ -87,14 +131,30 @@ module Parser =
                 | TokenType.LONG -> AstType.SLong
                 | TokenType.SHORT -> AstType.SShort
                 | TokenType.VOID -> AstType.Void
-                | TokenType.IDENT -> state.getTypedef t.Lexeme
+                | TokenType.STRUCT ->
+                    if state.peek.Type = TokenType.IDENT then
+                        //named struct
+                        let n = (expectToken state TokenType.IDENT).Lexeme
+                        if state.peek.Type = TokenType.OPEN_CURLY then
+                            //we have a definition, e.g. struct Name {int a;}
+                            let ans = AstType.Struct (parseStructInner state)
+                            state.addStruct n ans
+                            ans
+                        else
+                            //we have no definition, so the struct type must already be defined
+                            state.getStruct n
+                    else
+                        //anonymous struct e.g. struct Name {int a;}
+                        AstType.Struct (parseStructInner state)
+                | TokenType.IDENT when state.isTypedef t.Lexeme ->
+                    state.getTypedef t.Lexeme
                 | _ -> raise (UnexpectedToken (t, "type"))
         while state.peek.Type = TokenType.STAR do
             ty <- AstType.Pointer ty
             ignore state.pop
         ty
             
-    let isType (state: ParserState): bool =
+    and isType (state: ParserState): bool =
         let t = state.peek
         match t.Type with
             | TokenType.CHAR
@@ -103,35 +163,36 @@ module Parser =
             | TokenType.INT
             | TokenType.LONG
             | TokenType.SHORT
+            | TokenType.STRUCT
             | TokenType.VOID -> true
             | TokenType.IDENT -> state.isTypedef t.Lexeme
             | _ -> false
             
-    let getType (expr: AstExpr): AstType =
+    and getType (expr: AstExpr): AstType =
         match expr with
             | AstExpr.Binary (t, _, _, _) | AstExpr.Conditional (t, _, _, _) | AstExpr.Const (t, _)
             | AstExpr.Ident (t, _) | AstExpr.Postfix (t, _, _) | AstExpr.Unary (t, _, _) | AstExpr.Cast(t, _)
             | AstExpr.FunCall (t, _, _) -> t
             
-    let expectIdent (state: ParserState): string =
+    and expectIdent (state: ParserState): string =
         let t = state.pop
         match t.Type with
             | TokenType.IDENT -> (t.Lexeme)
             | _ -> raise (UnexpectedToken (t, "identifier"))
     
-    let expectToken (state: ParserState) (tokenType: TokenType): Token =
+    and expectToken (state: ParserState) (tokenType: TokenType): Token =
         let t = state.pop
         match t.Type with
             | x when x = tokenType -> t
             | _ -> raise (UnexpectedToken (t, tokenType.ToString()))
     
-    let rec parseStructInner (state: ParserState): Tuple<AstType, string> list =
+    and parseStructInner (state: ParserState): Tuple<AstType, string> list =
         let mutable ans = []
         expectToken state TokenType.OPEN_CURLY |> ignore
         while not (state.peek.Type = TokenType.CLOSE_CURLY) do
             let t = parseDecl state
             match t with
-                | AstStmt.Decl(typ,name) -> ans <- ans@[(typ,name)]
+                | AstStmt.Decls(typ, [(name,None)]) -> ans <- ans@[(typ,name)]
                 | _ -> raise Unreachable
             expectToken state TokenType.SEMICOLON |> ignore
         expectToken state TokenType.CLOSE_CURLY |> ignore
@@ -379,12 +440,36 @@ module Parser =
     and parseStmt (state: ParserState): AstStmt =
         let ans = match (state.peek).Type with
                     | TokenType.RETURN -> parseReturn state
+                    | TokenType.TYPEDEF ->
+                        parseTypedef state
+                        AstStmt.Nop
                     | _ when isType state -> parseDecl state
                     | _ -> AstStmt.Expr (parseExpr state)
         expectToken state TokenType.SEMICOLON |> ignore
         ans
+    and parseDeclGivenType (state: ParserState) (t: AstType): AstStmt =
+        //helper function to parse <name> = <value> where value may not be a comma expression
+        let parseDeclInner _ =
+            let name = (expectToken state TokenType.IDENT).Lexeme
+            if state.peek.Type = TokenType.EQUALS then
+                expectToken state TokenType.EQUALS |> ignore
+                (name, Some (parseAssign state))
+            else
+                (name, None)
+        
+        let mutable ans = [parseDeclInner ()]
+        while state.peek.Type = TokenType.COMMA do
+            expectToken state TokenType.COMMA |> ignore
+            ans <- ans @ [parseDeclInner ()]
+        AstStmt.Decls (t, ans)
     and parseDecl (state: ParserState): AstStmt =
-        AstStmt.Decl ((expectType state), (state.pop.Lexeme))
+        let t = expectType state
+        parseDeclGivenType state t
+    and parseTypedef (state: ParserState) =
+        expectToken state TokenType.TYPEDEF |> ignore
+        let t = expectType state
+        let n = (expectToken state TokenType.IDENT).Lexeme
+        state.addTypedef n t
     and parseStruct (state: ParserState): AstStmt =
         expectToken state TokenType.STRUCT |> ignore
         let name = (expectToken state TokenType.IDENT).Lexeme
@@ -393,6 +478,7 @@ module Parser =
         
     and parseBlock (state: ParserState): AstStmt =
         expectToken state TokenType.OPEN_CURLY |> ignore
+        state.newFrame
         let mutable ans = []
         let mutable keepGoing = match (state.peek).Type with
                                  | TokenType.CLOSE_CURLY -> false
@@ -403,25 +489,48 @@ module Parser =
                           | TokenType.CLOSE_CURLY -> false
                           | _ -> true
         expectToken state TokenType.CLOSE_CURLY |> ignore
+        state.popFrame
         AstStmt.Block ans
         
-    let rec parse (state: ParserState) (soFar: AstFun list): AstFun list =
-        if state.isEnd then soFar else 
-            let t = expectType state
-            let name = expectIdent state
-            expectToken state TokenType.OPEN_PAREN |> ignore
-            let parameters = match state.peek.Type with
-                              | TokenType.VOID -> state.pop |> ignore; []
-                              | TokenType.CLOSE_PAREN -> []
-                              | _ ->
-                                  let mutable ans = [(expectType state, expectIdent state)]
-                                  while not (state.peek.Type = TokenType.CLOSE_PAREN) do
-                                    expectToken state TokenType.COMMA |> ignore
-                                    ans <- ans @ [(expectType state, expectIdent state)]
-                                  ans
-            expectToken state TokenType.CLOSE_PAREN |> ignore
-            let body = parseBlock state
-            parse state (soFar @ [AstFun(t, name, parameters, body)])
+    let rec parse (state: ParserState) (soFar: AstFun list * AstStmt list): AstFun list * AstStmt list =
+        if state.isEnd then
+            soFar
+        else
+            match state.peek.Type with
+                | TokenType.TYPEDEF ->
+                    parseTypedef state
+                    expectToken state TokenType.SEMICOLON |> ignore
+                    parse state soFar
+                | _ when isType state ->
+                    let t = expectType state
+                    if state.peek.Type = TokenType.SEMICOLON then
+                        //struct declaration
+                        expectToken state TokenType.SEMICOLON |> ignore
+                        parse state soFar
+                    elif state.peek.Type = TokenType.IDENT && state.peek2.Type = TokenType.OPEN_PAREN then
+                        //function
+                        let name = expectIdent state
+                        expectToken state TokenType.OPEN_PAREN |> ignore
+                        let parameters = match state.peek.Type with
+                                          | TokenType.VOID -> state.pop |> ignore; []
+                                          | TokenType.CLOSE_PAREN -> []
+                                          | _ ->
+                                              let mutable ans = [(expectType state, expectIdent state)]
+                                              while not (state.peek.Type = TokenType.CLOSE_PAREN) do
+                                                expectToken state TokenType.COMMA |> ignore
+                                                ans <- ans @ [(expectType state, expectIdent state)]
+                                              ans
+                        expectToken state TokenType.CLOSE_PAREN |> ignore
+                        let body = parseBlock state
+                        let sf1, sf2 = soFar
+                        parse state (sf1 @ [AstFun(t, name, parameters, body)], sf2)
+                    else
+                        //function
+                        let funs, stmts = soFar
+                        (funs, stmts @ [parseDeclGivenType state t])
+                | _ ->
+                    raise (UnexpectedToken (state.peek, ""))
+                    
         
     type AstFrame =
         {prev: AstFrame option; vars: Map<string, AstType>; funcs: Map<string, AstType>}
@@ -461,16 +570,31 @@ module Parser =
             | AstExpr.Postfix (_, op, e) ->
                 let e' = typifyE frame e
                 AstExpr.Postfix (getType e', op, e)
+            | AstExpr.Unary (_, TokenType.STAR, e) ->
+                let e = typifyE frame e
+                let t = getType e
+                match t with
+                    | AstType.Pointer pt -> AstExpr.Unary (pt, TokenType.STAR, e)
+                    | _ -> raise DerefNonPointer
             | AstExpr.Unary (_, op, e) ->
-                let e' = typifyE frame e
-                AstExpr.Unary (getType e', op, e)
+                let e = typifyE frame e
+                AstExpr.Unary (getType e, op, e)
             | AstExpr.Const _ -> expr
             | AstExpr.Cast (t, e) -> AstExpr.Cast (t, typifyE frame e)
             | AstExpr.FunCall (_, n, ps) -> AstExpr.FunCall (frame.getFunc n, n, List.map (typifyE frame) ps)
         
     let rec typifyS (frame: AstFrame) (stmt: AstStmt): AstFrame * AstStmt =
         match stmt with
-            | AstStmt.Decl (t, n) -> (frame.addVar n t, stmt)
+            | AstStmt.Decls (t, decls) ->
+                let mutable ans = []
+                let mutable frame = frame
+                for decl in decls do
+                    frame <- frame.addVar (fst decl) t
+                    match decl with
+                        | (_, None) -> ans <- ans @ [decl]
+                        | (n, Some(e)) -> ans <- ans @ [(n, Some (typifyE frame e))]
+                        
+                (frame, AstStmt.Decls (t, ans))
             | AstStmt.Expr e -> (frame, AstStmt.Expr (typifyE frame e))
             | AstStmt.Return e -> (frame, AstStmt.Return (typifyE frame e))
             | AstStmt.Block l ->
@@ -482,6 +606,7 @@ module Parser =
                                             (flist @ [fstmt], fframe)
                                         ) ([], frame2) l)))
             | AstStmt.StructDecl _ -> (frame, stmt)
+            | AstStmt.Nop -> (frame, stmt)
         
     let typifyFun (f: AstFun) (frame: AstFrame): AstFun =
         let frame = frame.newFrame
@@ -491,8 +616,8 @@ module Parser =
                 frame f.parameters
         AstFun (f.ret, f.name, f.parameters, snd (typifyS frame f.body))
     
-    let typify (fs: AstFun list): AstFun list =
-        let mutable frame = {prev = None; vars = Map.empty; funcs = Map.empty}
+    let typify (frame: AstFrame) (fs: AstFun list): AstFun list =
+        let mutable frame = frame
         let mutable ans = []
         for f in fs do
             frame <- frame.addFun f.name f.ret
@@ -500,5 +625,15 @@ module Parser =
         ans
     
     let parseEnt (tokens: Token list) : AstFun list =
-        parse {Tokens=tokens; Typedefs=(Dictionary<string, AstType>())} []
-        |> typify
+        let funs, globals = parse {Tokens=tokens; Types=ParserStateTypes.empty} ([], [])
+        let mutable frame = {prev = None; vars = Map.empty; funcs = Map.empty}
+        let globals =
+            List.collect
+              (fun g ->
+                match g with
+                  | AstStmt.Decls (t, l) -> List.map (fun (x, y) -> (t, x, y)) l
+                  | _ -> []
+              ) globals
+        for (t, n, _) in globals do
+            frame <- frame.addVar n t
+        typify frame funs
